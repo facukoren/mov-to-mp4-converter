@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+logs/
+*.mov
+*.MOV
+*.mp4
+*.MP4
+.venv/
+.vscode/
+.idea/
