@@ -1,51 +1,40 @@
 # MOV → MP4 Converter
 
-Convertidor simple con interfaz gráfica que transforma videos `.mov` a `.mp4` optimizando peso sin pérdida visible de calidad. Maneja correctamente videos HDR del iPhone (HLG/Dolby Vision) haciendo tone mapping a SDR BT.709 para que se vean bien en cualquier reproductor de Windows.
+Convierte videos `.mov` a `.mp4` con interfaz gráfica, reduciendo el peso significativamente sin pérdida visible de calidad. Maneja correctamente videos HDR del iPhone (HLG/Dolby Vision) para que se vean bien en cualquier reproductor de Windows.
 
-## Instalación (3 pasos)
+## Uso
 
-1. **Descargar el repo**
-   Click verde *Code* → *Download ZIP* → extraerlo donde quieras.
+1. **Descargar el repo** → *Code* → *Download ZIP* → extraer la carpeta
+2. **Doble click en `launch.bat`** → listo
 
-2. **Doble click en `install.bat`**
-   Instala automáticamente Python y ffmpeg (si no los tenés).
-   Cuando termine, **cerrá la ventana**.
+La primera vez descarga ffmpeg automáticamente (~50 MB). Python es el único requisito previo.
 
-3. **Doble click en `ui.bat`**
-   Se abre la interfaz. Listo.
+> **¿No tenés Python?** → descargalo desde [python.org/downloads](https://www.python.org/downloads/) e instalalo. Después volvé al paso 2.
 
-> Si es la primera vez que instalás algo con `winget`, Windows puede pedir permisos de administrador. Aceptá.
+---
 
-## Cómo usar
+## ¿Qué hace?
 
-1. Click en **Agregar archivos…** (o **Agregar carpeta…** para procesar varios a la vez).
-2. Opcional: elegir **carpeta de destino** (por defecto queda al lado del original).
-3. Click en **Convertir**.
+1. Arrastrás archivos `.mov` o una carpeta
+2. Elegís carpeta de destino (opcional, por defecto queda al lado del original)
+3. Click **Convertir** — muestra progreso en tiempo real
 
-Los archivos originales nunca se borran. Los logs de cada sesión quedan en `logs/`.
+Los archivos originales nunca se borran. Los logs quedan en `logs/`.
 
-## Qué hace por dentro
+## Por qué se ve mejor y pesa menos
 
-| Entrada                     | Qué hace                                                |
-|-----------------------------|---------------------------------------------------------|
-| Video (cualquier codec)     | Re-encode a **H.264 CRF 23**, profile High 4.1, yuv420p |
-| Video HDR (HLG / PQ)        | Tone mapping BT.2020 HDR → BT.709 SDR 8-bit             |
-| Audio AAC                   | Copy (sin re-encode)                                    |
-| Audio PCM/otros             | Re-encode a AAC 192 kbps                                |
-
-Resultado: reproduce en cualquier Windows sin instalar codecs, con peso mucho menor y calidad indistinguible a ojo.
+| Situación                       | Qué hace                                              |
+|---------------------------------|-------------------------------------------------------|
+| Video cualquier codec           | Re-encode **H.264 CRF 23** — compatible en todo Windows sin codecs extra |
+| Video HDR (iPhone con HLG/PQ)   | Tone mapping BT.2020 HDR → BT.709 SDR para colores correctos |
+| Audio AAC                       | Copia sin re-encode                                   |
+| Audio PCM / otros               | Re-encode AAC 192 kbps                                |
 
 ## Requisitos
 
-- Windows 10 o 11
-- Python 3.10+ (se instala automáticamente)
-- ffmpeg (se instala automáticamente)
-
-## Troubleshooting
-
-- **"ffmpeg no encontrado"** al abrir la UI: cerrá la app, ejecutá `install.bat` y después abrí una terminal nueva antes de relanzar.
-- **No se abre nada al hacer doble click en `ui.bat`**: abrí una consola en la carpeta y ejecutá `python ui.py` para ver el error.
-- **El video se ve con colores raros**: el tone mapping HDR → SDR ya está activado. Si persiste, abrí un issue con el archivo de origen.
+- Windows 10 / 11
+- [Python 3.10+](https://www.python.org/downloads/)
+- ffmpeg — **se descarga automáticamente** la primera vez
 
 ## Licencia
 

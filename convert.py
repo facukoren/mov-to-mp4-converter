@@ -19,6 +19,7 @@ Uso:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -54,12 +55,19 @@ HDR_TONEMAP_FILTER = (
 )
 
 
+def _inject_local_bin() -> None:
+    """Agrega el bin/ local al PATH si tiene ffmpeg."""
+    local_bin = Path(__file__).parent / "bin"
+    if (local_bin / "ffmpeg.exe").exists():
+        os.environ["PATH"] = str(local_bin) + os.pathsep + os.environ.get("PATH", "")
+
+
 def check_ffmpeg() -> None:
+    _inject_local_bin()
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         sys.exit(
-            "ERROR: ffmpeg/ffprobe no estan en el PATH.\n"
-            "Instalalo con:  winget install Gyan.FFmpeg\n"
-            "Luego abri una nueva terminal y volve a correr el script."
+            "ERROR: ffmpeg/ffprobe no encontrado.\n"
+            "Ejecuta launch.bat para descargarlo automaticamente."
         )
 
 
