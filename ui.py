@@ -785,14 +785,19 @@ class ConverterUI:
             self._finish()
             return
 
+        CLOUD_SIZE_WARN_GB = 3.0
         for i, src in enumerate(files, 1):
             if self.cancel_flag.is_set():
                 self._log("warn", "Sesion cancelada por el usuario")
                 break
             self._emit("status", f"[{i}/{len(files)}]  {src.name}  · nube")
             self._log("header", f"[{i}/{len(files)}] {src.name}")
+            src_gb = src.stat().st_size / 1_073_741_824
+            if src_gb > CLOUD_SIZE_WARN_GB:
+                self._log("warn",
+                    f"archivo grande ({src_gb:.1f} GB) — la subida puede tardar varios minutos")
             try:
-                result = self._run_one_cloud(src, dest, convert_fn)
+                result = self._run_one_cloud(src, dest, convert_fn, i, len(files))
                 if result:
                     src_sz, dst_sz, t_up, t_proc, t_down = result
                     total_src += src_sz
@@ -822,7 +827,7 @@ class ConverterUI:
         self._log("metric", f"tiempo total:      {self._fmt_duration(elapsed)}")
         self._finish()
 
-    def _run_one_cloud(self, src: Path, dest, convert_fn):
+    def _run_one_cloud(self, src: Path, dest, convert_fn, file_index: int, total_files: int):
         out_dir = dest if dest else src.parent
         out_dir.mkdir(parents=True, exist_ok=True)
         dst = out_dir / (src.stem + ".mp4")
@@ -832,43 +837,100 @@ class ConverterUI:
 
         src_size = src.stat().st_size
 
-        # Metadata local antes de subir
         try:
             info = probe_full(src)
             self._log_source_metadata(info, src_size)
         except Exception as e:
             self._log("debug", f"no se pudo leer metadata local: {e}")
 
-        # Upload (leer + enviar)
-        t0 = time.monotonic()
+        t_read = time.monotonic()
         self._log("step", f"leyendo {human_size(src_size)} del disco...")
         video_bytes = src.read_bytes()
-        read_elapsed = time.monotonic() - t0
+        read_elapsed = time.monotonic() - t_read
 
-        t_up_start = time.monotonic()
-        self._log("step", "subiendo + procesando en nube...")
-        result_bytes, stats = convert_fn.remote(video_bytes, src.name)
-        roundtrip = time.monotonic() - t_up_start
+        # Subir + procesar con retry (hasta 2 intentos)
+        t_cloud = time.monotonic()
+        result_bytes = None
+        stats = None
+        last_error = None
 
-        # No tenemos breakdown exacto upload/proceso del lado server,
-        # pero estimamos upload como tiempo minimo de transmisión.
-        # El SDK devuelve solo cuando termino todo, asi que roundtrip = upload + proceso + download parcial.
+        for attempt in range(1, 3):
+            if attempt > 1:
+                self._log("warn", f"reintentando (intento {attempt}/2)...")
+            try:
+                result_bytes, stats = self._stream_modal(
+                    convert_fn, video_bytes, src.name, file_index, total_files
+                )
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+                self._log("warn", f"intento {attempt} fallido: {e}")
 
-        t_down_start = time.monotonic()
+        if last_error is not None:
+            raise last_error
+
+        cloud_elapsed = time.monotonic() - t_cloud
+
+        t_write = time.monotonic()
+        self._log("step", "guardando resultado en disco...")
         dst.write_bytes(result_bytes)
-        write_elapsed = time.monotonic() - t_down_start
+        write_elapsed = time.monotonic() - t_write
 
         dst_size = stats["dst_size"]
         ratio = stats["ratio"]
+        cloud_speed = stats.get("speed", 0)
+        cloud_time = stats.get("elapsed", cloud_elapsed)
 
-        upload_mbps = (src_size * 8 / 1_000_000) / max(read_elapsed + roundtrip, 0.01)
+        if stats.get("stderr"):
+            for ln in stats["stderr"].splitlines()[-3:]:
+                self._log("debug", f"ffmpeg: {ln}")
 
         self._log("success", f"listo: {dst.name}")
-        self._log("metric",  f"tamaño:   {human_size(src_size)} → {human_size(dst_size)}  ({ratio:+.1f}%)")
-        self._log("metric",  f"lectura:  {self._fmt_duration(read_elapsed)}")
-        self._log("metric",  f"nube:     {self._fmt_duration(roundtrip)}   (~{upload_mbps:.0f} Mbps efectivo)")
-        self._log("metric",  f"escritura:{self._fmt_duration(write_elapsed)}")
-        return src_size, dst_size, read_elapsed, roundtrip, write_elapsed
+        self._log("metric",  f"tamaño:    {human_size(src_size)} → {human_size(dst_size)}  ({ratio:+.1f}%)")
+        self._log("metric",  f"lectura:   {self._fmt_duration(read_elapsed)}")
+        self._log("metric",  f"nube:      {self._fmt_duration(cloud_time)}  ({cloud_speed:.2f}x realtime)")
+        self._log("metric",  f"escritura: {self._fmt_duration(write_elapsed)}")
+        return src_size, dst_size, read_elapsed, cloud_elapsed, write_elapsed
+
+    def _stream_modal(self, convert_fn, video_bytes: bytes, filename: str,
+                      file_index: int, total_files: int) -> tuple[bytes, dict]:
+        """Itera convert_fn.remote_gen(), loggea progreso en tiempo real, devuelve (bytes, stats)."""
+        self._log("step", "subiendo a Modal y procesando en nube...")
+        t0 = time.monotonic()
+
+        for msg in convert_fn.remote_gen(video_bytes, filename):
+            if self.cancel_flag.is_set():
+                raise RuntimeError("cancelado por el usuario")
+
+            kind = msg.get("type")
+
+            if kind == "info":
+                self._log("step",  f"video:  {msg['vstrat']}")
+                self._log("step",  f"audio:  {msg['astrat']}")
+                self._log("debug", f"duración fuente: {self._fmt_duration(msg.get('duration', 0))}")
+
+            elif kind == "progress":
+                pct = msg["pct"]
+                speed = msg.get("speed", 0)
+                eta = msg.get("eta", 0)
+                self._log("debug",
+                    f"progreso {pct:>3}%   {speed:.2f}x realtime   ETA {self._fmt_duration(eta)}")
+                # Progreso fraccional: archivo (i-1) + fracción del actual
+                self._emit("overall", (file_index - 1) + pct / 100)
+
+            elif kind == "error":
+                stderr = msg.get("stderr", "")
+                for ln in stderr.splitlines()[-8:]:
+                    self._log("error", f"ffmpeg: {ln}")
+                raise RuntimeError(f"Modal worker: {msg.get('message', 'error desconocido')}")
+
+            elif kind == "done":
+                upload_mbps = (len(video_bytes) * 8 / 1_000_000) / max(time.monotonic() - t0, 0.01)
+                self._log("debug", f"transferencia total: ~{upload_mbps:.0f} Mbps efectivo")
+                return msg["result"], msg["stats"]
+
+        raise RuntimeError("Modal worker terminó sin devolver resultado")
 
     # ── Queue polling ─────────────────────────────────────────────────────────
 
