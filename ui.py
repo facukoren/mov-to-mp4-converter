@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UI simple (Tkinter) para el converter MOV -> MP4."""
+"""UI simple (Tkinter) para el converter MOV -> MP4. Soporta modo local y nube (Modal)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import subprocess
 import threading
 from pathlib import Path
 from tkinter import (
-    Tk, StringVar, END, filedialog, messagebox, ttk, Listbox, Text, SINGLE,
+    Tk, StringVar, BooleanVar, END, filedialog, messagebox, ttk, Listbox, Text, SINGLE,
 )
 
 from convert import (
@@ -23,17 +23,31 @@ from convert import (
 )
 
 
+def _load_modal():
+    """Importa modal e inyecta credenciales desde .env si existen."""
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        import os
+        for line in env_file.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+    import modal
+    return modal
+
+
 class ConverterUI:
     def __init__(self, root: Tk) -> None:
         self.root = root
         root.title("MOV -> MP4 converter")
-        root.geometry("720x560")
+        root.geometry("720x580")
 
         self.files: list[Path] = []
         self.dest_dir: Path | None = None
         self.msg_queue: queue.Queue = queue.Queue()
         self.worker: threading.Thread | None = None
         self.cancel_flag = threading.Event()
+        self.use_cloud = BooleanVar(value=False)
         self._logger = self._setup_logger()
 
         self._build()
@@ -44,7 +58,6 @@ class ConverterUI:
         log_dir.mkdir(exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         log_file = log_dir / f"conversion_{stamp}.log"
-
         logger = logging.getLogger("converter")
         logger.setLevel(logging.DEBUG)
         handler = logging.FileHandler(log_file, encoding="utf-8")
@@ -77,6 +90,23 @@ class ConverterUI:
         ttk.Button(dest, text="Elegir...", command=self.choose_dest).pack(side="right")
         ttk.Button(dest, text="Usar origen", command=self.reset_dest).pack(side="right", padx=4)
 
+        # Toggle local / nube
+        mode_frame = ttk.Frame(self.root)
+        mode_frame.pack(fill="x", padx=8, pady=2)
+        ttk.Label(mode_frame, text="Procesamiento:").pack(side="left")
+        ttk.Radiobutton(
+            mode_frame, text="Local (tu PC)",
+            variable=self.use_cloud, value=False,
+            command=self._on_mode_change,
+        ).pack(side="left", padx=8)
+        ttk.Radiobutton(
+            mode_frame, text="Nube (Modal) — mas rapido, no usa tu CPU",
+            variable=self.use_cloud, value=True,
+            command=self._on_mode_change,
+        ).pack(side="left")
+        self.mode_label = ttk.Label(mode_frame, text="", foreground="#888")
+        self.mode_label.pack(side="left", padx=8)
+
         progress = ttk.Frame(self.root)
         progress.pack(fill="x", **pad)
         self.status_var = StringVar(value="Listo.")
@@ -86,7 +116,7 @@ class ConverterUI:
         self.current = ttk.Progressbar(progress, mode="determinate")
         self.current.pack(fill="x", pady=2)
 
-        log_frame = ttk.LabelFrame(self.root, text=f"Log  —  guardado en logs/")
+        log_frame = ttk.LabelFrame(self.root, text="Log  —  guardado en logs/")
         log_frame.pack(fill="both", expand=True, **pad)
         self.log = Text(log_frame, height=8, wrap="word")
         self.log.pack(fill="both", expand=True, padx=4, pady=4)
@@ -98,6 +128,14 @@ class ConverterUI:
         self.cancel_btn = ttk.Button(actions, text="Cancelar", command=self.cancel, state="disabled")
         self.cancel_btn.pack(side="right", padx=4)
         ttk.Button(actions, text="Ver logs", command=self.open_logs_folder).pack(side="left")
+
+    def _on_mode_change(self) -> None:
+        if self.use_cloud.get():
+            self.mode_label.config(text="Los archivos se suben a Modal, se procesan en nube y se descargan automaticamente.")
+        else:
+            self.mode_label.config(text="")
+
+    # ── File management ────────────────────────────────────────────────────────
 
     def add_files(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -116,9 +154,7 @@ class ConverterUI:
                 self._add_path(p)
 
     def _add_path(self, p: Path) -> None:
-        if p in self.files:
-            return
-        if p.suffix.lower() != ".mov":
+        if p in self.files or p.suffix.lower() != ".mov":
             return
         self.files.append(p)
         self.listbox.insert(END, str(p))
@@ -141,34 +177,40 @@ class ConverterUI:
             self.dest_dir = Path(folder)
             self.dest_var.set(str(self.dest_dir))
 
+    def reset_dest(self) -> None:
+        self.dest_dir = None
+        self.dest_var.set("(misma carpeta que el origen)")
+
     def open_logs_folder(self) -> None:
         import os
         logs_dir = Path(__file__).parent / "logs"
         logs_dir.mkdir(exist_ok=True)
         os.startfile(str(logs_dir))
 
-    def reset_dest(self) -> None:
-        self.dest_dir = None
-        self.dest_var.set("(misma carpeta que el origen)")
-
     def append_log(self, text: str) -> None:
         self.log.insert(END, text + "\n")
         self.log.see(END)
         self._logger.info(text)
 
+    # ── Start / cancel ─────────────────────────────────────────────────────────
+
     def start(self) -> None:
         if not self.files:
             messagebox.showwarning("Nada para convertir", "Agrega archivos primero.")
             return
-        try:
-            check_ffmpeg()
-        except SystemExit as e:
-            if messagebox.askyesno(
-                "ffmpeg no encontrado",
-                f"{e}\n\n¿Queres que lo instale ahora con winget?",
-            ):
-                self._install_ffmpeg()
-            return
+
+        cloud = self.use_cloud.get()
+
+        if not cloud:
+            try:
+                check_ffmpeg()
+            except SystemExit as e:
+                if messagebox.askyesno(
+                    "ffmpeg no encontrado",
+                    f"{e}\n\n¿Queres que lo instale ahora?",
+                ):
+                    self._install_ffmpeg()
+                return
 
         self.cancel_flag.clear()
         self.start_btn.config(state="disabled")
@@ -178,9 +220,8 @@ class ConverterUI:
 
         files = list(self.files)
         dest = self.dest_dir
-        self.worker = threading.Thread(
-            target=self._run_all, args=(files, dest), daemon=True,
-        )
+        target = self._run_all_cloud if cloud else self._run_all_local
+        self.worker = threading.Thread(target=target, args=(files, dest), daemon=True)
         self.worker.start()
 
     def cancel(self) -> None:
@@ -188,32 +229,33 @@ class ConverterUI:
         self.status_var.set("Cancelando...")
 
     def _install_ffmpeg(self) -> None:
-        self.status_var.set("Instalando ffmpeg (puede tardar unos minutos)...")
-        self.append_log("Ejecutando: winget install Gyan.FFmpeg")
+        self.status_var.set("Instalando ffmpeg...")
 
         def run():
             try:
                 subprocess.run(
-                    [
-                        "winget", "install", "--id", "Gyan.FFmpeg",
-                        "--source", "winget",
-                        "--accept-package-agreements",
-                        "--accept-source-agreements",
-                    ],
+                    ["winget", "install", "--id", "Gyan.FFmpeg", "--source", "winget",
+                     "--accept-package-agreements", "--accept-source-agreements"],
                     check=True,
                 )
-                self._emit("log", "ffmpeg instalado. Cerra la app y volve a abrirla.")
+                self._emit("log", "ffmpeg instalado. Cerra y volvé a abrir la app.")
                 self._emit("status", "ffmpeg instalado. Reinicia la app.")
             except Exception as e:
                 self._emit("log", f"Error instalando ffmpeg: {e}")
-                self._emit("status", "Fallo la instalacion. Instala manualmente.")
 
         threading.Thread(target=run, daemon=True).start()
+
+    # ── Shared helpers ─────────────────────────────────────────────────────────
 
     def _emit(self, kind: str, payload) -> None:
         self.msg_queue.put((kind, payload))
 
-    def _run_all(self, files: list[Path], dest: Path | None) -> None:
+    def _finish(self) -> None:
+        self._emit("done", None)
+
+    # ── Local processing ───────────────────────────────────────────────────────
+
+    def _run_all_local(self, files: list[Path], dest: Path | None) -> None:
         for i, src in enumerate(files, 1):
             if self.cancel_flag.is_set():
                 self._emit("log", "Cancelado.")
@@ -222,15 +264,15 @@ class ConverterUI:
             self._emit("status", f"[{i}/{len(files)}] {src.name}")
             self._emit("log", f"[{i}/{len(files)}] {src.name}")
             try:
-                self._run_one(src, dest)
+                self._run_one_local(src, dest)
             except subprocess.CalledProcessError as e:
                 self._emit("log", f"  ERROR ffmpeg exit {e.returncode}")
             except Exception as e:
                 self._emit("log", f"  ERROR: {e}")
             self._emit("overall", i)
-        self._emit("done", None)
+        self._finish()
 
-    def _run_one(self, src: Path, dest: Path | None) -> None:
+    def _run_one_local(self, src: Path, dest: Path | None) -> None:
         out_dir = dest if dest else src.parent
         out_dir.mkdir(parents=True, exist_ok=True)
         dst = out_dir / (src.stem + ".mp4")
@@ -248,13 +290,10 @@ class ConverterUI:
         self._emit("current", 0)
 
         cmd = build_ffmpeg_cmd(src, dst, map_args, codec_args)
-
         proc = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
         )
 
@@ -266,8 +305,7 @@ class ConverterUI:
             line = line.strip()
             if line.startswith("out_time_ms="):
                 try:
-                    ms = int(line.split("=", 1)[1])
-                    self._emit("current", ms / 1_000_000)
+                    self._emit("current", int(line.split("=", 1)[1]) / 1_000_000)
                 except ValueError:
                     pass
             elif line == "progress=end":
@@ -275,11 +313,7 @@ class ConverterUI:
 
         proc.wait()
         if self.cancel_flag.is_set():
-            if dst.exists():
-                try:
-                    dst.unlink()
-                except OSError:
-                    pass
+            dst.unlink(missing_ok=True)
             return
         if proc.returncode != 0:
             stderr = proc.stderr.read() if proc.stderr else ""
@@ -289,10 +323,72 @@ class ConverterUI:
         src_size = src.stat().st_size
         dst_size = dst.stat().st_size
         ratio = (1 - dst_size / src_size) * 100
+        self._emit("log", f"  {human_size(src_size)} -> {human_size(dst_size)} ({ratio:+.1f}%)")
+
+    # ── Cloud processing ───────────────────────────────────────────────────────
+
+    def _run_all_cloud(self, files: list[Path], dest: Path | None) -> None:
+        try:
+            modal = _load_modal()
+        except Exception as e:
+            self._emit("log", f"ERROR cargando Modal: {e}")
+            self._emit("log", "Instala con:  pip install modal")
+            self._finish()
+            return
+
+        try:
+            convert_fn = modal.Function.lookup("mov-to-mp4-converter", "convert")
+        except Exception as e:
+            self._emit("log", f"ERROR conectando con Modal: {e}")
+            self._emit("log", "Asegurate de haber deployado: python -m modal deploy modal_worker.py")
+            self._finish()
+            return
+
+        for i, src in enumerate(files, 1):
+            if self.cancel_flag.is_set():
+                self._emit("log", "Cancelado.")
+                break
+            self._emit("overall", i - 1)
+            self._emit("status", f"[{i}/{len(files)}] {src.name}  (nube)")
+            self._emit("log", f"[{i}/{len(files)}] {src.name}")
+            try:
+                self._run_one_cloud(src, dest, convert_fn)
+            except Exception as e:
+                self._emit("log", f"  ERROR: {e}")
+            self._emit("overall", i)
+        self._finish()
+
+    def _run_one_cloud(self, src: Path, dest, convert_fn) -> None:
+        out_dir = dest if dest else src.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dst = out_dir / (src.stem + ".mp4")
+        if dst.exists():
+            self._emit("log", f"  [SKIP] ya existe: {dst}")
+            return
+
+        src_size = src.stat().st_size
+        self._emit("log", f"  Subiendo {human_size(src_size)}...")
+        self._emit("current_max", 3)
+        self._emit("current", 1)
+
+        video_bytes = src.read_bytes()
+
+        self._emit("log", "  Procesando en nube (Modal)...")
+        self._emit("current", 2)
+
+        result_bytes, stats = convert_fn.remote(video_bytes, src.name)
+
+        self._emit("log", "  Descargando resultado...")
+        dst.write_bytes(result_bytes)
+        self._emit("current", 3)
+
+        ratio = stats["ratio"]
         self._emit(
             "log",
-            f"  {human_size(src_size)} -> {human_size(dst_size)} ({ratio:+.1f}%)",
+            f"  {human_size(stats['src_size'])} -> {human_size(stats['dst_size'])} ({ratio:+.1f}%)",
         )
+
+    # ── Queue polling ──────────────────────────────────────────────────────────
 
     def _poll_queue(self) -> None:
         try:

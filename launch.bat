@@ -82,6 +82,13 @@ if not exist "%~dp0bin\ffmpeg.exe" (
 set "PATH=%~dp0bin;%PATH%"
 echo.
 
-REM ── 3. Lanzar UI ───────────────────────────────────────────────────────────
+REM ── 3. Dependencias Python ─────────────────────────────────────────────────
+python -c "import modal" >nul 2>&1
+if errorlevel 1 (
+    echo  Instalando modal SDK...
+    python -m pip install modal --quiet
+)
+
+REM ── 4. Lanzar UI ───────────────────────────────────────────────────────────
 :launch
 start "" pythonw "%~dp0ui.py"
