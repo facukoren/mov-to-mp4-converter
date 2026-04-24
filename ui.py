@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UI simple (Tkinter) para el converter MOV -> MP4. Soporta modo local y nube (Modal)."""
+"""UI para el converter MOV -> MP4. Modo local y nube (Modal)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ import subprocess
 import threading
 from pathlib import Path
 from tkinter import (
-    Tk, StringVar, BooleanVar, END, filedialog, messagebox, ttk, Listbox, Text, SINGLE,
+    Tk, StringVar, BooleanVar, END, filedialog, messagebox, ttk, Listbox, Text,
+    EXTENDED, font as tkfont,
 )
 
 from convert import (
@@ -22,9 +23,19 @@ from convert import (
     probe_full,
 )
 
+# ── Paleta ────────────────────────────────────────────────────────────────────
+BG       = "#fafafa"
+SURFACE  = "#ffffff"
+BORDER   = "#e5e5e7"
+TEXT     = "#1d1d1f"
+MUTED    = "#6e6e73"
+ACCENT   = "#007aff"
+ACCENT_H = "#0062cc"
+SUCCESS  = "#34c759"
+DANGER   = "#ff3b30"
+
 
 def _load_modal():
-    """Importa modal e inyecta credenciales desde .env si existen."""
     env_file = Path(__file__).parent / ".env"
     if env_file.exists():
         import os
@@ -39,8 +50,10 @@ def _load_modal():
 class ConverterUI:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        root.title("MOV -> MP4 converter")
-        root.geometry("720x580")
+        root.title("MOV → MP4")
+        root.geometry("780x640")
+        root.minsize(680, 560)
+        root.configure(bg=BG)
 
         self.files: list[Path] = []
         self.dest_dir: Path | None = None
@@ -48,10 +61,97 @@ class ConverterUI:
         self.worker: threading.Thread | None = None
         self.cancel_flag = threading.Event()
         self.use_cloud = BooleanVar(value=False)
+        self.log_visible = BooleanVar(value=False)
         self._logger = self._setup_logger()
 
+        self._setup_styles()
         self._build()
         self._poll_queue()
+        self._refresh_file_view()
+
+    # ── Theming ───────────────────────────────────────────────────────────────
+
+    def _setup_styles(self) -> None:
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        # Fuentes
+        self.font_title = tkfont.Font(family="Segoe UI", size=22, weight="bold")
+        self.font_sub   = tkfont.Font(family="Segoe UI", size=10)
+        self.font_h2    = tkfont.Font(family="Segoe UI", size=11, weight="bold")
+        self.font_body  = tkfont.Font(family="Segoe UI", size=10)
+        self.font_small = tkfont.Font(family="Segoe UI", size=9)
+        self.font_mono  = tkfont.Font(family="Consolas", size=9)
+
+        style.configure("App.TFrame", background=BG)
+        style.configure("Card.TFrame", background=SURFACE, relief="flat", borderwidth=1)
+        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=self.font_title)
+        style.configure("Sub.TLabel", background=BG, foreground=MUTED, font=self.font_sub)
+        style.configure("Card.TLabel", background=SURFACE, foreground=TEXT, font=self.font_body)
+        style.configure("CardMuted.TLabel", background=SURFACE, foreground=MUTED, font=self.font_small)
+        style.configure("CardH.TLabel", background=SURFACE, foreground=TEXT, font=self.font_h2)
+        style.configure("Status.TLabel", background=BG, foreground=MUTED, font=self.font_small)
+
+        # Botones
+        style.configure(
+            "Primary.TButton",
+            background=ACCENT, foreground="#ffffff",
+            padding=(24, 10), font=self.font_h2,
+            borderwidth=0, relief="flat",
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", ACCENT_H), ("disabled", "#b0d3ff")],
+            foreground=[("disabled", "#ffffff")],
+        )
+
+        style.configure(
+            "Ghost.TButton",
+            background=BG, foreground=TEXT,
+            padding=(12, 6), font=self.font_body,
+            borderwidth=1, relief="solid",
+        )
+        style.map("Ghost.TButton", background=[("active", "#f0f0f2")])
+
+        style.configure(
+            "Link.TButton",
+            background=BG, foreground=ACCENT,
+            padding=(0, 0), font=self.font_small,
+            borderwidth=0, relief="flat",
+        )
+        style.map("Link.TButton", background=[("active", BG)])
+
+        style.configure(
+            "CardBtn.TButton",
+            background=SURFACE, foreground=TEXT,
+            padding=(10, 5), font=self.font_small,
+            borderwidth=1, relief="solid",
+        )
+        style.map("CardBtn.TButton", background=[("active", "#f0f0f2")])
+
+        # Segmented toggle
+        style.configure(
+            "Seg.TRadiobutton",
+            background=SURFACE, foreground=TEXT,
+            padding=(14, 6), font=self.font_body,
+            borderwidth=0,
+        )
+        style.map(
+            "Seg.TRadiobutton",
+            background=[("selected", ACCENT), ("active", "#f0f0f2")],
+            foreground=[("selected", "#ffffff")],
+            indicatorcolor=[("selected", ACCENT), ("!selected", SURFACE)],
+        )
+
+        # Progress
+        style.configure(
+            "Primary.Horizontal.TProgressbar",
+            background=ACCENT, troughcolor="#e8e8ec",
+            borderwidth=0, thickness=6,
+        )
 
     def _setup_logger(self) -> logging.Logger:
         log_dir = Path(__file__).parent / "logs"
@@ -67,75 +167,219 @@ class ConverterUI:
         self._log_file = log_file
         return logger
 
+    # ── Layout ────────────────────────────────────────────────────────────────
+
     def _build(self) -> None:
-        pad = {"padx": 8, "pady": 4}
+        root_frame = ttk.Frame(self.root, style="App.TFrame", padding=(24, 20))
+        root_frame.pack(fill="both", expand=True)
 
-        top = ttk.Frame(self.root)
-        top.pack(fill="x", **pad)
-        ttk.Button(top, text="Agregar archivos...", command=self.add_files).pack(side="left")
-        ttk.Button(top, text="Agregar carpeta...", command=self.add_folder).pack(side="left", padx=4)
-        ttk.Button(top, text="Quitar seleccionado", command=self.remove_selected).pack(side="left")
-        ttk.Button(top, text="Limpiar", command=self.clear_files).pack(side="left", padx=4)
+        # Header
+        header = ttk.Frame(root_frame, style="App.TFrame")
+        header.pack(fill="x", pady=(0, 16))
+        ttk.Label(header, text="MOV → MP4", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text="Optimizá el peso de tus videos sin perder calidad",
+            style="Sub.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
 
-        list_frame = ttk.LabelFrame(self.root, text="Archivos a convertir")
-        list_frame.pack(fill="both", expand=True, **pad)
-        self.listbox = Listbox(list_frame, selectmode=SINGLE)
-        self.listbox.pack(fill="both", expand=True, padx=4, pady=4)
+        # ── Card: archivos ────────────────────────────────────────────────────
+        files_card = self._make_card(root_frame)
+        files_card.pack(fill="both", expand=True, pady=(0, 12))
 
-        dest = ttk.Frame(self.root)
-        dest.pack(fill="x", **pad)
-        ttk.Label(dest, text="Destino:").pack(side="left")
-        self.dest_var = StringVar(value="(misma carpeta que el origen)")
-        ttk.Label(dest, textvariable=self.dest_var, foreground="#444").pack(side="left", padx=6)
-        ttk.Button(dest, text="Elegir...", command=self.choose_dest).pack(side="right")
-        ttk.Button(dest, text="Usar origen", command=self.reset_dest).pack(side="right", padx=4)
+        files_header = ttk.Frame(files_card, style="Card.TFrame")
+        files_header.pack(fill="x", padx=16, pady=(14, 8))
+        self.files_title = ttk.Label(files_header, text="Videos", style="CardH.TLabel")
+        self.files_title.pack(side="left")
+        ttk.Button(
+            files_header, text="+ Archivos", style="CardBtn.TButton",
+            command=self.add_files,
+        ).pack(side="right", padx=(4, 0))
+        ttk.Button(
+            files_header, text="+ Carpeta", style="CardBtn.TButton",
+            command=self.add_folder,
+        ).pack(side="right", padx=(4, 0))
+        ttk.Button(
+            files_header, text="Limpiar", style="CardBtn.TButton",
+            command=self.clear_files,
+        ).pack(side="right", padx=(4, 0))
 
-        # Toggle local / nube
-        mode_frame = ttk.Frame(self.root)
-        mode_frame.pack(fill="x", padx=8, pady=2)
-        ttk.Label(mode_frame, text="Procesamiento:").pack(side="left")
+        # Zona lista / empty state
+        self.files_body = ttk.Frame(files_card, style="Card.TFrame")
+        self.files_body.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+
+        # Empty state
+        self.empty_frame = ttk.Frame(self.files_body, style="Card.TFrame")
+        ttk.Label(
+            self.empty_frame,
+            text="📁",
+            background=SURFACE, foreground=MUTED,
+            font=tkfont.Font(family="Segoe UI", size=32),
+        ).pack(pady=(24, 6))
+        ttk.Label(
+            self.empty_frame,
+            text="Agregá videos .mov para empezar",
+            style="Card.TLabel",
+        ).pack()
+        ttk.Label(
+            self.empty_frame,
+            text="Click en “+ Archivos” o “+ Carpeta”",
+            style="CardMuted.TLabel",
+        ).pack(pady=(2, 24))
+
+        # Lista
+        self.list_frame = ttk.Frame(self.files_body, style="Card.TFrame")
+        self.listbox = Listbox(
+            self.list_frame,
+            selectmode=EXTENDED,
+            bg=SURFACE, fg=TEXT,
+            selectbackground=ACCENT, selectforeground="#ffffff",
+            borderwidth=0, highlightthickness=0,
+            activestyle="none",
+            font=self.font_body,
+        )
+        self.listbox.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(self.list_frame, orient="vertical", command=self.listbox.yview)
+        sb.pack(side="right", fill="y")
+        self.listbox.configure(yscrollcommand=sb.set)
+        self.listbox.bind("<Delete>", lambda e: self.remove_selected())
+
+        # ── Card: opciones ────────────────────────────────────────────────────
+        opts_card = self._make_card(root_frame)
+        opts_card.pack(fill="x", pady=(0, 12))
+
+        opts = ttk.Frame(opts_card, style="Card.TFrame")
+        opts.pack(fill="x", padx=16, pady=14)
+
+        # Destino
+        dest_row = ttk.Frame(opts, style="Card.TFrame")
+        dest_row.pack(fill="x")
+        ttk.Label(dest_row, text="Destino", style="CardH.TLabel", width=14).pack(side="left")
+        self.dest_var = StringVar(value="Misma carpeta que el origen")
+        ttk.Label(
+            dest_row, textvariable=self.dest_var,
+            style="CardMuted.TLabel",
+        ).pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            dest_row, text="Cambiar", style="CardBtn.TButton",
+            command=self.choose_dest,
+        ).pack(side="right", padx=(4, 0))
+        ttk.Button(
+            dest_row, text="Origen", style="CardBtn.TButton",
+            command=self.reset_dest,
+        ).pack(side="right", padx=(4, 0))
+
+        # Separador
+        ttk.Frame(opts, style="Card.TFrame", height=12).pack(fill="x")
+
+        # Modo (segmented)
+        mode_row = ttk.Frame(opts, style="Card.TFrame")
+        mode_row.pack(fill="x")
+        ttk.Label(mode_row, text="Procesar en", style="CardH.TLabel", width=14).pack(side="left")
+
+        seg = ttk.Frame(mode_row, style="Card.TFrame")
+        seg.pack(side="left")
         ttk.Radiobutton(
-            mode_frame, text="Local (tu PC)",
+            seg, text="Local", style="Seg.TRadiobutton",
             variable=self.use_cloud, value=False,
             command=self._on_mode_change,
-        ).pack(side="left", padx=8)
+        ).pack(side="left")
         ttk.Radiobutton(
-            mode_frame, text="Nube (Modal) — mas rapido, no usa tu CPU",
+            seg, text="Nube", style="Seg.TRadiobutton",
             variable=self.use_cloud, value=True,
             command=self._on_mode_change,
         ).pack(side="left")
-        self.mode_label = ttk.Label(mode_frame, text="", foreground="#888")
-        self.mode_label.pack(side="left", padx=8)
 
-        progress = ttk.Frame(self.root)
-        progress.pack(fill="x", **pad)
-        self.status_var = StringVar(value="Listo.")
-        ttk.Label(progress, textvariable=self.status_var).pack(anchor="w")
-        self.overall = ttk.Progressbar(progress, mode="determinate")
-        self.overall.pack(fill="x", pady=2)
-        self.current = ttk.Progressbar(progress, mode="determinate")
-        self.current.pack(fill="x", pady=2)
+        self.mode_hint = ttk.Label(mode_row, text="", style="CardMuted.TLabel")
+        self.mode_hint.pack(side="left", padx=(12, 0))
+        self._on_mode_change()
 
-        log_frame = ttk.LabelFrame(self.root, text="Log  —  guardado en logs/")
-        log_frame.pack(fill="both", expand=True, **pad)
-        self.log = Text(log_frame, height=8, wrap="word")
-        self.log.pack(fill="both", expand=True, padx=4, pady=4)
+        # ── Progress ──────────────────────────────────────────────────────────
+        prog_frame = ttk.Frame(root_frame, style="App.TFrame")
+        prog_frame.pack(fill="x", pady=(0, 12))
+        self.status_var = StringVar(value="Listo para convertir")
+        ttk.Label(prog_frame, textvariable=self.status_var, style="Status.TLabel").pack(anchor="w", pady=(0, 4))
+        self.progress = ttk.Progressbar(
+            prog_frame, style="Primary.Horizontal.TProgressbar",
+            mode="determinate",
+        )
+        self.progress.pack(fill="x")
 
-        actions = ttk.Frame(self.root)
-        actions.pack(fill="x", **pad)
-        self.start_btn = ttk.Button(actions, text="Convertir", command=self.start)
+        # ── Actions ───────────────────────────────────────────────────────────
+        actions = ttk.Frame(root_frame, style="App.TFrame")
+        actions.pack(fill="x", pady=(0, 8))
+
+        self.toggle_log_btn = ttk.Button(
+            actions, text="▸ Detalles", style="Link.TButton",
+            command=self._toggle_log,
+        )
+        self.toggle_log_btn.pack(side="left")
+        ttk.Button(
+            actions, text="Ver logs", style="Link.TButton",
+            command=self.open_logs_folder,
+        ).pack(side="left", padx=(14, 0))
+
+        self.start_btn = ttk.Button(
+            actions, text="Convertir", style="Primary.TButton",
+            command=self.start,
+        )
         self.start_btn.pack(side="right")
-        self.cancel_btn = ttk.Button(actions, text="Cancelar", command=self.cancel, state="disabled")
-        self.cancel_btn.pack(side="right", padx=4)
-        ttk.Button(actions, text="Ver logs", command=self.open_logs_folder).pack(side="left")
+
+        self.cancel_btn = ttk.Button(
+            actions, text="Cancelar", style="Ghost.TButton",
+            command=self.cancel, state="disabled",
+        )
+        self.cancel_btn.pack(side="right", padx=(0, 8))
+
+        # ── Log (colapsable) ──────────────────────────────────────────────────
+        self.log_frame = ttk.Frame(root_frame, style="App.TFrame")
+        self.log = Text(
+            self.log_frame,
+            height=7, wrap="word",
+            bg=SURFACE, fg=TEXT,
+            borderwidth=1, relief="solid",
+            highlightthickness=0,
+            font=self.font_mono,
+            padx=10, pady=8,
+        )
+        self.log.pack(fill="both", expand=True)
+
+    def _make_card(self, parent) -> ttk.Frame:
+        # Frame con "borde" simulado
+        outer = ttk.Frame(parent, style="Card.TFrame")
+        return outer
+
+    # ── Empty state logic ─────────────────────────────────────────────────────
+
+    def _refresh_file_view(self) -> None:
+        count = len(self.files)
+        self.files_title.config(
+            text="Videos" if count == 0 else f"Videos ({count})"
+        )
+        if count == 0:
+            self.list_frame.pack_forget()
+            self.empty_frame.pack(fill="both", expand=True)
+        else:
+            self.empty_frame.pack_forget()
+            self.list_frame.pack(fill="both", expand=True)
 
     def _on_mode_change(self) -> None:
         if self.use_cloud.get():
-            self.mode_label.config(text="Los archivos se suben a Modal, se procesan en nube y se descargan automaticamente.")
+            self.mode_hint.config(text="los archivos se suben y procesan en Modal")
         else:
-            self.mode_label.config(text="")
+            self.mode_hint.config(text="usa el CPU de esta PC")
 
-    # ── File management ────────────────────────────────────────────────────────
+    def _toggle_log(self) -> None:
+        if self.log_visible.get():
+            self.log_frame.pack_forget()
+            self.toggle_log_btn.config(text="▸ Detalles")
+            self.log_visible.set(False)
+        else:
+            self.log_frame.pack(fill="both", expand=True, pady=(8, 0))
+            self.toggle_log_btn.config(text="▾ Detalles")
+            self.log_visible.set(True)
+
+    # ── File management ───────────────────────────────────────────────────────
 
     def add_files(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -144,6 +388,7 @@ class ConverterUI:
         )
         for p in paths:
             self._add_path(Path(p))
+        self._refresh_file_view()
 
     def add_folder(self) -> None:
         folder = filedialog.askdirectory(title="Elegir carpeta con .mov")
@@ -152,24 +397,25 @@ class ConverterUI:
         for p in sorted(Path(folder).rglob("*")):
             if p.suffix.lower() == ".mov":
                 self._add_path(p)
+        self._refresh_file_view()
 
     def _add_path(self, p: Path) -> None:
         if p in self.files or p.suffix.lower() != ".mov":
             return
         self.files.append(p)
-        self.listbox.insert(END, str(p))
+        self.listbox.insert(END, f"  {p.name}   · {p.parent}")
 
     def remove_selected(self) -> None:
-        sel = self.listbox.curselection()
-        if not sel:
-            return
-        idx = sel[0]
-        self.listbox.delete(idx)
-        del self.files[idx]
+        sel = list(self.listbox.curselection())
+        for idx in reversed(sel):
+            self.listbox.delete(idx)
+            del self.files[idx]
+        self._refresh_file_view()
 
     def clear_files(self) -> None:
         self.files.clear()
         self.listbox.delete(0, END)
+        self._refresh_file_view()
 
     def choose_dest(self) -> None:
         folder = filedialog.askdirectory(title="Carpeta de destino")
@@ -179,7 +425,7 @@ class ConverterUI:
 
     def reset_dest(self) -> None:
         self.dest_dir = None
-        self.dest_var.set("(misma carpeta que el origen)")
+        self.dest_var.set("Misma carpeta que el origen")
 
     def open_logs_folder(self) -> None:
         import os
@@ -192,15 +438,14 @@ class ConverterUI:
         self.log.see(END)
         self._logger.info(text)
 
-    # ── Start / cancel ─────────────────────────────────────────────────────────
+    # ── Start / cancel ────────────────────────────────────────────────────────
 
     def start(self) -> None:
         if not self.files:
-            messagebox.showwarning("Nada para convertir", "Agrega archivos primero.")
+            messagebox.showwarning("Nada para convertir", "Agrega videos primero.")
             return
 
         cloud = self.use_cloud.get()
-
         if not cloud:
             try:
                 check_ffmpeg()
@@ -215,7 +460,7 @@ class ConverterUI:
         self.cancel_flag.clear()
         self.start_btn.config(state="disabled")
         self.cancel_btn.config(state="normal")
-        self.overall.config(maximum=len(self.files), value=0)
+        self.progress.config(maximum=max(len(self.files), 1), value=0)
         self.log.delete("1.0", END)
 
         files = list(self.files)
@@ -245,7 +490,7 @@ class ConverterUI:
 
         threading.Thread(target=run, daemon=True).start()
 
-    # ── Shared helpers ─────────────────────────────────────────────────────────
+    # ── Shared helpers ────────────────────────────────────────────────────────
 
     def _emit(self, kind: str, payload) -> None:
         self.msg_queue.put((kind, payload))
@@ -253,15 +498,14 @@ class ConverterUI:
     def _finish(self) -> None:
         self._emit("done", None)
 
-    # ── Local processing ───────────────────────────────────────────────────────
+    # ── Local processing ──────────────────────────────────────────────────────
 
     def _run_all_local(self, files: list[Path], dest: Path | None) -> None:
         for i, src in enumerate(files, 1):
             if self.cancel_flag.is_set():
                 self._emit("log", "Cancelado.")
                 break
-            self._emit("overall", i - 1)
-            self._emit("status", f"[{i}/{len(files)}] {src.name}")
+            self._emit("status", f"[{i}/{len(files)}]  {src.name}")
             self._emit("log", f"[{i}/{len(files)}] {src.name}")
             try:
                 self._run_one_local(src, dest)
@@ -282,12 +526,9 @@ class ConverterUI:
 
         info = probe_full(src)
         map_args, codec_args, vstrat, astrat = build_args(info["streams"])
-        total = duration_seconds(info)
 
         self._emit("log", f"  {vstrat}")
         self._emit("log", f"  {astrat}")
-        self._emit("current_max", max(total, 0.01))
-        self._emit("current", 0)
 
         cmd = build_ffmpeg_cmd(src, dst, map_args, codec_args)
         proc = subprocess.Popen(
@@ -302,14 +543,6 @@ class ConverterUI:
             if self.cancel_flag.is_set():
                 proc.terminate()
                 break
-            line = line.strip()
-            if line.startswith("out_time_ms="):
-                try:
-                    self._emit("current", int(line.split("=", 1)[1]) / 1_000_000)
-                except ValueError:
-                    pass
-            elif line == "progress=end":
-                self._emit("current", total)
 
         proc.wait()
         if self.cancel_flag.is_set():
@@ -323,16 +556,15 @@ class ConverterUI:
         src_size = src.stat().st_size
         dst_size = dst.stat().st_size
         ratio = (1 - dst_size / src_size) * 100
-        self._emit("log", f"  {human_size(src_size)} -> {human_size(dst_size)} ({ratio:+.1f}%)")
+        self._emit("log", f"  {human_size(src_size)} → {human_size(dst_size)} ({ratio:+.1f}%)")
 
-    # ── Cloud processing ───────────────────────────────────────────────────────
+    # ── Cloud processing ──────────────────────────────────────────────────────
 
     def _run_all_cloud(self, files: list[Path], dest: Path | None) -> None:
         try:
             modal = _load_modal()
         except Exception as e:
             self._emit("log", f"ERROR cargando Modal: {e}")
-            self._emit("log", "Instala con:  pip install modal")
             self._finish()
             return
 
@@ -340,7 +572,6 @@ class ConverterUI:
             convert_fn = modal.Function.lookup("mov-to-mp4-converter", "convert")
         except Exception as e:
             self._emit("log", f"ERROR conectando con Modal: {e}")
-            self._emit("log", "Asegurate de haber deployado: python -m modal deploy modal_worker.py")
             self._finish()
             return
 
@@ -348,8 +579,7 @@ class ConverterUI:
             if self.cancel_flag.is_set():
                 self._emit("log", "Cancelado.")
                 break
-            self._emit("overall", i - 1)
-            self._emit("status", f"[{i}/{len(files)}] {src.name}  (nube)")
+            self._emit("status", f"[{i}/{len(files)}]  {src.name}  · nube")
             self._emit("log", f"[{i}/{len(files)}] {src.name}")
             try:
                 self._run_one_cloud(src, dest, convert_fn)
@@ -368,27 +598,21 @@ class ConverterUI:
 
         src_size = src.stat().st_size
         self._emit("log", f"  Subiendo {human_size(src_size)}...")
-        self._emit("current_max", 3)
-        self._emit("current", 1)
-
         video_bytes = src.read_bytes()
 
-        self._emit("log", "  Procesando en nube (Modal)...")
-        self._emit("current", 2)
-
+        self._emit("log", "  Procesando en nube...")
         result_bytes, stats = convert_fn.remote(video_bytes, src.name)
 
         self._emit("log", "  Descargando resultado...")
         dst.write_bytes(result_bytes)
-        self._emit("current", 3)
 
         ratio = stats["ratio"]
         self._emit(
             "log",
-            f"  {human_size(stats['src_size'])} -> {human_size(stats['dst_size'])} ({ratio:+.1f}%)",
+            f"  {human_size(stats['src_size'])} → {human_size(stats['dst_size'])} ({ratio:+.1f}%)",
         )
 
-    # ── Queue polling ──────────────────────────────────────────────────────────
+    # ── Queue polling ─────────────────────────────────────────────────────────
 
     def _poll_queue(self) -> None:
         try:
@@ -399,16 +623,11 @@ class ConverterUI:
                 elif kind == "status":
                     self.status_var.set(payload)
                 elif kind == "overall":
-                    self.overall.config(value=payload)
-                elif kind == "current_max":
-                    self.current.config(maximum=payload, value=0)
-                elif kind == "current":
-                    self.current.config(value=payload)
+                    self.progress.config(value=payload)
                 elif kind == "done":
-                    self.status_var.set("Listo.")
+                    self.status_var.set("✓ Listo")
                     self.start_btn.config(state="normal")
                     self.cancel_btn.config(state="disabled")
-                    self.current.config(value=0)
         except queue.Empty:
             pass
         self.root.after(80, self._poll_queue)
