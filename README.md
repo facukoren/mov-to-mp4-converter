@@ -7,9 +7,7 @@ Convierte videos `.mov` a `.mp4` con interfaz gráfica, reduciendo el peso signi
 1. **Descargar el repo** → *Code* → *Download ZIP* → extraer la carpeta
 2. **Doble click en `launch.bat`** → listo
 
-La primera vez descarga ffmpeg automáticamente (~50 MB). Python es el único requisito previo.
-
-> **¿No tenés Python?** → descargalo desde [python.org/downloads](https://www.python.org/downloads/) e instalalo. Después volvé al paso 2.
+La primera vez instala Python y ffmpeg automáticamente si no los tenés. No requiere hacer nada más.
 
 ---
 
@@ -32,9 +30,8 @@ Los archivos originales nunca se borran. Los logs quedan en `logs/`.
 
 ## Requisitos
 
-- Windows 10 / 11
-- [Python 3.10+](https://www.python.org/downloads/)
-- ffmpeg — **se descarga automáticamente** la primera vez
+- Windows 10 / 11 (64-bit)
+- Conexión a internet la primera vez (para descargar Python y ffmpeg automáticamente)
 
 ## Licencia
 

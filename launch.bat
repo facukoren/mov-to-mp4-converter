@@ -5,18 +5,40 @@ cd /d "%~dp0"
 
 REM ── 1. Python ──────────────────────────────────────────────────────────────
 where python >nul 2>&1
+if not errorlevel 1 goto :check_ffmpeg
+
+echo.
+echo  [!] Python no esta instalado. Descargando e instalando...
+echo      Esto solo ocurre la primera vez (~25 MB).
+echo.
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ProgressPreference='SilentlyContinue';" ^
+  "$tmp = [System.IO.Path]::GetTempPath() + 'python_installer.exe';" ^
+  "$url = 'https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe';" ^
+  "Write-Host '  Descargando Python...';" ^
+  "Invoke-WebRequest $url -OutFile $tmp;" ^
+  "Write-Host '  Instalando Python (sin necesidad de hacer nada)...';" ^
+  "Start-Process $tmp -ArgumentList '/quiet InstallAllUsers=0 PrependPath=1 Include_tcltk=1 Include_pip=1' -Wait;" ^
+  "Remove-Item $tmp;" ^
+  "Write-Host '  Python instalado.'"
+
+REM Refrescar PATH desde el registro para que python sea visible sin reiniciar
+for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USERPATH=%%B"
+for /f "tokens=2*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do set "SYSPATH=%%B"
+set "PATH=%SYSPATH%;%USERPATH%"
+
+where python >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo  [!] Python no esta instalado.
-    echo      Abriendo descarga de Python...
-    echo      Instala Python, reinicia y vuelve a ejecutar este archivo.
-    echo.
-    start "" "https://www.python.org/downloads/"
+    echo  [ERROR] No se pudo instalar Python automaticamente.
+    echo  Descargalo manualmente desde https://www.python.org/downloads/
     pause
     exit /b 1
 )
 
-REM ── 2. ffmpeg (local primero, luego PATH, sino descarga) ───────────────────
+REM ── 2. ffmpeg (bin/ local primero, luego PATH, sino descarga) ──────────────
+:check_ffmpeg
 if exist "%~dp0bin\ffmpeg.exe" (
     set "PATH=%~dp0bin;%PATH%"
     goto :launch
@@ -34,7 +56,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ProgressPreference='SilentlyContinue';" ^
   "$tmp = [System.IO.Path]::GetTempPath() + 'ffmpeg_dl.zip';" ^
   "$url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';" ^
-  "Write-Host '  Descargando...';" ^
+  "Write-Host '  Descargando ffmpeg...';" ^
   "Invoke-WebRequest $url -OutFile $tmp;" ^
   "Write-Host '  Extrayendo...';" ^
   "$bin = '%~dp0bin';" ^
@@ -48,7 +70,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "};" ^
   "$zip.Dispose();" ^
   "Remove-Item $tmp;" ^
-  "Write-Host '  listo.'"
+  "Write-Host '  ffmpeg listo.'"
 
 if not exist "%~dp0bin\ffmpeg.exe" (
     echo.
@@ -60,6 +82,6 @@ if not exist "%~dp0bin\ffmpeg.exe" (
 set "PATH=%~dp0bin;%PATH%"
 echo.
 
-REM ── 3. Lanzar la UI ────────────────────────────────────────────────────────
+REM ── 3. Lanzar UI ───────────────────────────────────────────────────────────
 :launch
 start "" pythonw "%~dp0ui.py"
